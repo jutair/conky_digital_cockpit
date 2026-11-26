@@ -1,4 +1,3 @@
--- Audi Digital Cockpit - Conky 1.22.2 / X11 / Cairo-Xlib
 -- Adds TOP 3 RAM, CPU and per-process NETWORK cards.
 -- Runtime data: /run/conky-digital-cockpit/
 
