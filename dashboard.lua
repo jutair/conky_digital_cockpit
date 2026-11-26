@@ -100,7 +100,61 @@ local function temperature_color(temp)
     return COLORS.red
 end
 
-local function draw_gauge(cr, cx, cy, radius, value, title, caption)
+-- Vertical CPU thermometer positioned between CPU and RAM gauges.
+local function draw_thermometer(cr, cx, top_y, bottom_y, temperature)
+    local min_temp, max_temp = 30, 100
+    local tube_width = 14
+    local bulb_radius = 13
+    local color = temperature_color(temperature)
+
+    draw_text(cr, cx - 43, top_y - 17, 'CPU TEMP', 8, COLORS.muted, true)
+
+    -- Outer tube and bulb
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND)
+    draw_line(cr, cx, top_y, cx, bottom_y, COLORS.track, tube_width)
+
+    set_color(cr, COLORS.track)
+    cairo_arc(cr, cx, bottom_y + 5, bulb_radius, 0, 2 * math.pi)
+    cairo_fill(cr)
+
+    -- Inner tube
+    draw_line(cr, cx, top_y + 2, cx, bottom_y, COLORS.panel, 7)
+
+    if temperature then
+        local bounded = math.max(min_temp, math.min(max_temp, temperature))
+        local fraction = (bounded - min_temp) / (max_temp - min_temp)
+        local fill_y = bottom_y - fraction * (bottom_y - top_y)
+
+        draw_line(cr, cx, fill_y, cx, bottom_y, color, 7)
+
+        set_color(cr, color)
+        cairo_arc(cr, cx, bottom_y + 5, 8, 0, 2 * math.pi)
+        cairo_fill(cr)
+    else
+        set_color(cr, COLORS.muted)
+        cairo_arc(cr, cx, bottom_y + 5, 5, 0, 2 * math.pi)
+        cairo_fill(cr)
+    end
+
+    -- Temperature scale
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_BUTT)
+
+    for _, mark in ipairs({40, 60, 80, 100}) do
+        local mark_y = bottom_y - ((mark - min_temp) / (max_temp - min_temp))
+            * (bottom_y - top_y)
+
+        draw_line(cr, cx + 12, mark_y, cx + 18, mark_y, COLORS.muted, 1)
+        draw_text(cr, cx + 22, mark_y + 3, tostring(mark), 6, COLORS.muted, false)
+    end
+
+    local value_text = temperature
+        and string.format('%.0f°C', temperature)
+        or '--°C'
+
+    draw_text(cr, cx - 22, bottom_y + 36, value_text, 11, color, true)
+end
+
+local function draw_gauge(cr, cx, cy, radius, value, title, caption, detail, scale_labels)
     value = math.max(0, math.min(100, value))
     local start_angle = math.rad(135)
     local end_angle = math.rad(405)
@@ -134,15 +188,19 @@ local function draw_gauge(cr, cx, cy, radius, value, title, caption)
         )
     end
 
-    draw_text(cr, cx - 43, cy + 8, string.format('%3.0f%%', value),
-              31, COLORS.white, true)
-    draw_text(cr, cx - 27, cy + 34, title, 11, COLORS.red, true)
-    draw_text(cr, cx - 63, cy + 55, caption, 8, COLORS.muted, false)
-    draw_text(cr, cx - 76, cy + 82, '0',   7, COLORS.muted, false)
-    draw_text(cr, cx - 43, cy + 82, '25',  7, COLORS.muted, false)
-    draw_text(cr, cx -  8, cy + 82, '50',  7, COLORS.muted, false)
-    draw_text(cr, cx + 27, cy + 82, '75',  7, COLORS.muted, false)
-    draw_text(cr, cx + 59, cy + 82, '100', 7, COLORS.muted, false)
+    draw_text(cr, cx - 38, cy + 5, string.format('%3.0f%%', value),
+              27, COLORS.white, true)
+    draw_text(cr, cx - 22, cy + 29, title, 10, COLORS.red, true)
+    draw_text(cr, cx - 53, cy + 45, caption, 7, COLORS.muted, false)
+    if detail then
+        draw_text(cr, cx - 43, cy + 60, detail, 7, COLORS.white, true)
+    end
+    local labels = scale_labels or {'0', '25', '50', '75', '100'}
+    local label_x = {-69, -40, -7, 25, 53}
+    for i = 1, 5 do
+        draw_text(cr, cx + label_x[i], cy + 76, labels[i],
+                  6, COLORS.muted, false)
+    end
 end
 
 local function get_dynamic_peak(key, value)
@@ -224,6 +282,24 @@ local function short_name(name, max_chars)
         return string.sub(name, 1, max_chars - 2) .. '..'
     end
     return name
+end
+
+local function memory_to_mb(value)
+    value = tostring(value or ''):lower():gsub(',', '.')
+    local number = tonumber(value:match('([%d%.]+)'))
+    if not number then return 0 end
+    if value:find('t') then return number * 1024 * 1024 end
+    if value:find('g') then return number * 1024 end
+    if value:find('m') then return number end
+    if value:find('k') then return number / 1024 end
+    return number / (1024 * 1024)
+end
+
+local function format_memory_tick(mb)
+    if mb >= 1024 then
+        return string.format('%.1fG', mb / 1024)
+    end
+    return string.format('%.0fM', mb)
 end
 
 local function format_memory(mb)
@@ -333,25 +409,30 @@ function conky_draw_dashboard()
     local cr = cairo_create(surface)
 
     -- Header
-    draw_text(cr, 24, 37, 'AUDI', 25, COLORS.white, true)
-    draw_text(cr, 103, 36, 'DIGITAL COCKPIT', 14, COLORS.red, true)
+    draw_text(cr, 24, 37, 'CONKY', 25, COLORS.white, true)
+    draw_text(cr, 125, 36, 'DIGITAL COCKPIT', 14, COLORS.red, true)
     draw_text(cr, 24, 58, 'SYSTEM MONITOR  /  LIVE TELEMETRY', 9, COLORS.muted, false)
     draw_text(cr, 835, 36, 'LINUX', 10, COLORS.muted, true)
     draw_line(cr, 24, 76, 916, 76, COLORS.red, 2)
 
-    -- CPU and RAM gauges
-    draw_gauge(cr, 260, 205, 91, parsed_number('${cpu}'), 'CPU', 'PROCESSOR LOAD')
-    draw_gauge(cr, 680, 205, 91, parsed_number('${memperc}'), 'RAM', 'MEMORY USAGE')
-
-    -- CPU temperature and frequency
+    -- Three balanced instruments, left to right:
+    -- Processor / Memory / Temperature
     local temperature = get_temperature()
-    draw_text(cr, 24, 103, 'CPU TEMP', 8, COLORS.muted, true)
-    draw_text(cr, 91, 103,
-        temperature and string.format('%.0f°C', temperature) or '--°C',
-        10, temperature_color(temperature), true)
-    draw_text(cr, 760, 103, 'CPU FREQ', 8, COLORS.muted, true)
-    draw_text(cr, 830, 103,
-        tostring(conky_parse('${freq_g}')) .. ' GHz', 10, COLORS.white, true)
+    local memory_used = tostring(conky_parse('${mem}'))
+    local memory_total = tostring(conky_parse('${memmax}'))
+    local memory_total_mb = memory_to_mb(memory_total)
+    local memory_detail = memory_used .. ' / ' .. memory_total
+
+    local memory_ticks = {}
+    for i = 0, 4 do
+        memory_ticks[i + 1] = format_memory_tick(memory_total_mb * i / 4)
+    end
+
+    draw_gauge(cr, 190, 205, 78, parsed_number('${cpu}'),
+               'CPU', 'PROCESSOR LOAD')
+    draw_gauge(cr, 500, 205, 78, parsed_number('${memperc}'),
+               'RAM', 'MEMORY USED', memory_detail, memory_ticks)
+    draw_thermometer(cr, 805, 155, 255, temperature)
 
     -- New TOP 3 process cards, directly below the gauges
     draw_text(cr, 24, 330, 'TOP RESOURCE CONSUMERS', 11, COLORS.red, true)
